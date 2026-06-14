@@ -1,0 +1,6 @@
+CREATE TABLE empleados(
+    id INT,
+    nombre CHAR[23],
+    correo VARCHAR[30],
+    salario FLOAT
+);

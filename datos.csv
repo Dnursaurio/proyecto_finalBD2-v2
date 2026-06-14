@@ -1,3 +1,7 @@
-id,nombre
-23,Alonzo
-45,Carol
+id,nombre,correo,salario
+1,Juan,juan@gmail.com,2500.5
+2,Ana,ana@gmail.com,3200.0
+3,Carlos,carlos@gmail.com,1800.75
+4,Lucia,lucia@gmail.com,4100.25
+5,Mario,mario@gmail.com,2900.0
+6,Mario,mariereo@gmail.com,2950.0
