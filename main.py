@@ -238,8 +238,6 @@ class CBinTree:
 # DISCO
 #
 
-import os
-
 
 class DISK:
 
