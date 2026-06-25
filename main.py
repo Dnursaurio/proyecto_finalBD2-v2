@@ -134,7 +134,7 @@ class CBinTree:
                 actual = actual.nodes[1]
 
         return None
-
+    
     def find(self, x):
         nodo = self.find_node(x)
 
@@ -518,16 +518,16 @@ class DatabaseManager:
         )
 
     def inicializar_headers(self):
+        # 1. Inicializamos la estructura en memoria RAM (esto es rápido)
         self.inicializar_info_sectores()
-
-        for sector in range(self.disco.get_total_sectores()):
-            self.escribir_estado_sector(sector, self.LIBRE)
-
         self.cantidad_registros = 0
         self.guardar_header_global()
 
+        # 4. Reseteamos los punteros de escritura
         self.sector_actual = 0
-        self.off_tmp = self.HEADER_SECTOR_SIZE + self.HEADER_GLOBAL_SIZE
+        self.off_tmp = self.inicio_datos_sector(0)
+        
+        print("¡Headers inicializados instantáneamente con éxito!")
 
     def inicio_datos_sector(self, sector):
         if sector == 0:
@@ -777,6 +777,29 @@ class DatabaseManager:
 
         return datos, sector_actual, off_tmp
 
+    def construir_indice_avl(self, nombre_atributo):
+        arbol = CBinTree()
+        sector_actual = 0
+        off_tmp = self.inicio_datos_sector(0)
+
+        for _ in range(self.cantidad_registros):
+            sector_inicio = sector_actual
+            offset_inicio = off_tmp
+
+            registro = {}
+            for columna in self.schema:
+                datos, sector_actual, off_tmp = self.leer_bytes_logico(
+                    sector_actual, off_tmp, columna["tamaño"]
+                )
+                registro[columna["nombre"]] = self.bytes_a_campo(datos, columna)
+
+            arbol.ins(
+                registro[nombre_atributo],
+                sector_inicio,
+                offset_inicio
+            )
+        return arbol
+
     def leer_registros(self):
         registros = []
 
@@ -887,85 +910,168 @@ class DatabaseManager:
     def find(self, nombre_atributo, valor_buscado):
         if not self.existe_atributo(nombre_atributo):
             print("Atributo no encontrado")
-            return
-        arbol = CBinTree()
+            return []
 
-        sector_actual = 0
-        off_tmp = self.inicio_datos_sector(0)
+        col = next(c for c in self.schema if c["nombre"] == nombre_atributo)
+        try:
+            if col["tipo"] == "INT":
+                valor_buscado = int(valor_buscado)
+            elif col["tipo"] == "FLOAT":
+                valor_buscado = float(valor_buscado)
+        except ValueError:
+            print(f"Error: El valor '{valor_buscado}' no puede convertirse a {col['tipo']}.")
+            return []
 
-        for _ in range(self.cantidad_registros):
-
-            sector_inicio = sector_actual
-            offset_inicio = off_tmp
-
-            registro = {}
-
-            for columna in self.schema:
-
-                datos, sector_actual, off_tmp = self.leer_bytes_logico(
-                    sector_actual,
-                    off_tmp,
-                    columna["tamaño"]
-                )
-
-                registro[columna["nombre"]] = (
-                    self.bytes_a_campo(
-                        datos,
-                        columna
-                    )
-                )
-
-            arbol.ins(
-                registro[nombre_atributo],
-                sector_inicio,
-                offset_inicio
-            )
-
+        arbol = self.construir_indice_avl(nombre_atributo)
         direcciones = arbol.find(valor_buscado)
 
+        resultados = []
         for direccion in direcciones:
-            print(
-                self.leer_registro_desde(
-                    direccion["sector"],
-                    direccion["offset"]
-                )
-            )
+            # Leemos los datos del registro
+            reg = self.leer_registro_desde(direccion["sector"], direccion["offset"])
+            
+            # Convertimos el sector lineal a coordenadas físicas reales del disco
+            ubicacion = self.direccion_fisica_sector(direccion["sector"])
+            # Empaquetamos todo de forma elegante
+            resultados.append({
+                "datos": reg,
+                "ubicacion_fisica": {
+                    "plato": ubicacion["plato"],
+                    "superficie": ubicacion["superficie"],
+                    "pista": ubicacion["pista"],
+                    "sector": ubicacion["sector"],
+                    "offset_interno": direccion["offset"]
+                }
+            })
+            
+        return resultados
+    #busqueda por rango
+    def find_range(self, nombre_atributo, minimo, maximo):
+        if not self.existe_atributo(nombre_atributo):
+            print("Atributo no encontrado")
+            return []
+
+        col = next(c for c in self.schema if c["nombre"] == nombre_atributo)
+        if col["tipo"] == "INT":
+            minimo, maximo = int(minimo), int(maximo)
+        elif col["tipo"] == "FLOAT":
+            minimo, maximo = float(minimo), float(maximo)
+
+        arbol = self.construir_indice_avl(nombre_atributo)
+        direcciones = arbol.buscar_rango(minimo, maximo)
+
+        resultados = []
+        for dir in direcciones:
+            reg = self.leer_registro_desde(dir["sector"], dir["offset"])
+            ubicacion = self.direccion_fisica_sector(dir["sector"])
+            
+            resultados.append({
+                "datos": reg,
+                "ubicacion_fisica": {
+                    "plato": ubicacion["plato"],
+                    "superficie": ubicacion["superficie"],
+                    "pista": ubicacion["pista"],
+                    "sector": ubicacion["sector"],
+                    "offset_interno": dir["offset"]
+                }
+            })
+        return resultados
 
 
-p = 0
-t = 0
-s = 4
-c = 5
+#Interfaz por consola
+def menu_interactivo():
+    print("="*50)
+    print("  CONFIGURACIÓN DE GEOMETRÍA DEL DISCO RÍGIDO (Potencias de 2)")
+    print("="*50)
+    try:
+        p = int(input("Exponente de platos (2^p platos) [Por defecto 0 -> 1 plato]: ").strip() or "0")
+        t = int(input("Exponente de pistas (2^t pistas) [Por defecto 0 -> 1 pista]: ").strip() or "0")
+        s = int(input("Exponente de sectores (2^s sectores) [Por defecto 4 -> 16 sec]: ").strip() or "4")
+        c = int(input("Exponente de bytes por sector (2^c bytes) [Por defecto 5 -> 32 bytes]: ").strip() or "5")
+    except ValueError:
+        print("Valores erróneos. Usando valores por defecto (0, 0, 4, 5).")
+        p, t, s, c = 0, 0, 4, 5
 
-disco = DISK(p, t, s, c)
-disco.formateador()
+    disco = DISK(p, t, s, c)
+    disco.formateador()
+    db = DatabaseManager(disco)
+    db.inicializar_headers()
 
-db = DatabaseManager(disco)
-db.inicializar_headers()
+    while True:
+        print("\n" + "="*50)
+        print("SISTEMA DE GESTIÓN DE BASES DE DATOS FÍSICAS")
+        print("="*50)
+        print("1. Cargar Esquema de la Tabla (schema.txt)")
+        print("2. Poblar desde Archivo de Datos (datos.csv)")
+        print("3. Mostrar Todos los Registros Almacenados")
+        print("4. Ver Estado Físico de Sectores (Hardware)")
+        print("5. Ver Detalle de Consumo de Sectores (Gaps/Headers)")
+        print("6. Búsqueda Puntual (Indexada con Árbol AVL)")
+        print("7. Búsqueda por Rango (Indexada con Árbol AVL)")
+        print("8. Salir y Destruir Disco Dat")
+        print("="*50)
+        
+        opcion = input("Seleccione una opción estratégica (1-8): ").strip()
 
-db.cargar_schema("schema.txt")
-db.cargar_csv("datos.csv")
+        if opcion == "1":
+            ruta = input("Ruta del archivo de esquema [schema.txt]: ").strip() or "schema.txt"
+            if os.path.exists(ruta):
+                db.cargar_schema(ruta)
+            else:
+                print("Archivo de esquema no encontrado.")
 
-print("\n=== REGISTROS ===")
-db.mostrar_registros()
+        elif opcion == "2":
+            ruta = input("Ruta del archivo de datos CSV [datos.csv]: ").strip() or "datos.csv"
+            if os.path.exists(ruta):
+                db.cargar_csv(ruta)
+                print(f"Población completada. Registros en disco: {db.cantidad_registros}")
+            else:
+                print("Archivo CSV no encontrado.")
 
-print("\n=== ESTADO DE SECTORES ===")
-db.mostrar_estado_sectores()
+        elif opcion == "3":
+            print("\n=== REGISTROS LEÍDOS DESDE EL DISCO ===")
+            registros = db.leer_registros()
+            if not registros: print("Disco vacío o sin registros.")
+            for r in registros: print(r)
 
-print("\n=== INFORMACION DE SECTORES ===")
-db.mostrar_info_sectores()
+        elif opcion == "4":
+            print("\n=== MAPA GEOMÉTRICO DEL DISCO ===")
+            db.mostrar_estado_sectores()
 
-print("\n=== BUSQUEDA POR ID ===")
-db.find("id", 1)
+        elif opcion == "5":
+            print("\n=== INSPECTOR DETALLADO DE FRAGMENTACIÓN ===")
+            db.mostrar_info_sectores()
 
-print("\n=== BUSQUEDA POR NOMBRE ===")
-db.find("nombre", "Mario")
+        elif opcion == "6":
+            if not db.schema:
+                print("Cargue el esquema primero.")
+                continue
+            attr = input("Nombre del atributo a buscar: ").strip()
+            val = input("Valor exacto buscado: ").strip()
+            print("\nBuscando con el Índice AVL...")
+            res = db.find(attr, val)
+            print(f"Resultados encontrados ({len(res)}):")
+            for r in res: print(r)
 
-print("\n=== ATRIBUTO INEXISTENTE ===")
-db.find("apellido", "Perez")
+        elif opcion == "7":
+            if not db.schema:
+                print("Cargue el esquema primero.")
+                continue
+            attr = input("Nombre del atributo para el rango: ").strip()
+            min_val = input("Valor mínimo del límite: ").strip()
+            max_val = input("Valor máximo del límite: ").strip()
+            print("\nEjecutando recorrido en rango sobre el Árbol AVL...")
+            res = db.find_range(attr, min_val, max_val)
+            print(f"Resultados encontrados en el rango ({len(res)}):")
+            for r in res: print(r)
 
-print("\n=== VALOR NO ENCONTRADO ===")
-db.find("id", 9999)
+        elif opcion == "8":
+            disco.eliminar_disco()
+            print("Operación terminada. Disco destruido limpiamente.")
+            break
+        else:
+            print("Opción inválida, intente de nuevo.")
 
-disco.eliminar_disco()
+if __name__ == "__main__":
+    menu_interactivo()
 
