@@ -387,6 +387,7 @@ class DISK:
 #DatabaseManager
 #
 
+
 class DatabaseManager:
 
     LIBRE = 0
@@ -395,6 +396,8 @@ class DatabaseManager:
 
     HEADER_SECTOR_SIZE = 1
     HEADER_GLOBAL_SIZE = 4
+    HEADER_REGISTRO_SIZE = 4
+    VARCHAR_NULL = 65535
 
     def __init__(self, disco):
         self.disco = disco
@@ -404,8 +407,11 @@ class DatabaseManager:
         self.sector_actual = 0
         self.off_tmp = self.HEADER_SECTOR_SIZE + self.HEADER_GLOBAL_SIZE
 
-        self.info_sectores = []
-        self.inicializar_info_sectores()
+        # Metadatos solo de sectores usados.
+        self.info_sectores = {}
+
+        # Cache de índices AVL por atributo.
+        self.indices_avl = {}
 
     def capacidad_sector(self):
         return self.disco.get_capacidad_sector()
@@ -424,7 +430,6 @@ class DatabaseManager:
 
     def direccion_fisica_sector(self, sector_lineal):
         superficie, pista, sector = self.disco.lineal_a_direccion(sector_lineal)
-
         return {
             "plato": superficie // 2,
             "superficie": superficie % 2,
@@ -433,15 +438,15 @@ class DatabaseManager:
         }
 
     def inicializar_info_sectores(self):
-        self.info_sectores = []
+        self.info_sectores = {}
 
-        for sector_lineal in range(self.disco.get_total_sectores()):
+    def asegurar_info_sector(self, sector_lineal):
+        if sector_lineal not in self.info_sectores:
             header_size = self.inicio_datos_sector(sector_lineal)
             direccion = self.direccion_fisica_sector(sector_lineal)
 
-            self.info_sectores.append({
+            self.info_sectores[sector_lineal] = {
                 "direccion": direccion,
-                "estado": "LIBRE",
                 "capacidad": self.capacidad_sector(),
                 "ocupado": header_size,
                 "gap": 0,
@@ -451,15 +456,17 @@ class DatabaseManager:
                         "bytes": header_size
                     }
                 ]
-            })
+            }
 
-    def actualizar_info_estado(self, sector, estado):
-        self.info_sectores[sector]["estado"] = self.estado_a_texto(estado)
+        return self.info_sectores[sector_lineal]
+
+    
 
     def registrar_elemento_registro(self, sector, id_registro, bytes_ocupados):
-        self.info_sectores[sector]["ocupado"] += bytes_ocupados
+        info = self.asegurar_info_sector(sector)
+        info["ocupado"] += bytes_ocupados
 
-        self.info_sectores[sector]["elementos"].append({
+        self.asegurar_info_sector(sector)["elementos"].append({
             "tipo": "REGISTRO",
             "registro": id_registro,
             "bytes": bytes_ocupados
@@ -469,9 +476,10 @@ class DatabaseManager:
         if bytes_gap <= 0:
             return
 
-        self.info_sectores[sector]["gap"] += bytes_gap
+        info = self.asegurar_info_sector(sector)
+        info["gap"] += bytes_gap
 
-        self.info_sectores[sector]["elementos"].append({
+        info["elementos"].append({
             "tipo": "GAP",
             "bytes": bytes_gap
         })
@@ -481,8 +489,7 @@ class DatabaseManager:
             self.offset_real(sector, 0),
             bytes([estado])
         )
-
-        self.actualizar_info_estado(sector, estado)
+        self.asegurar_info_sector(sector)
 
     def leer_estado_sector(self, sector):
         dato = self.disco.leer(
@@ -518,21 +525,19 @@ class DatabaseManager:
         )
 
     def inicializar_headers(self):
-        # 1. Inicializamos la estructura en memoria RAM (esto es rápido)
         self.inicializar_info_sectores()
+        self.indices_avl = {}
         self.cantidad_registros = 0
         self.guardar_header_global()
 
-        # 4. Reseteamos los punteros de escritura
         self.sector_actual = 0
         self.off_tmp = self.inicio_datos_sector(0)
-        
+
         print("¡Headers inicializados instantáneamente con éxito!")
 
     def inicio_datos_sector(self, sector):
         if sector == 0:
             return self.HEADER_SECTOR_SIZE + self.HEADER_GLOBAL_SIZE
-
         return self.HEADER_SECTOR_SIZE
 
     def cargar_schema(self, ruta_txt):
@@ -565,8 +570,8 @@ class DatabaseManager:
                 tamaño = 4
 
             elif tipo.startswith("CHAR"):
-                tipo_base = "STRING"
-                match = re.search(r"CHAR\[(\d+)\]", tipo)
+                tipo_base = "CHAR"
+                match = re.search(r"CHAR(?:\[|\()(\d+)(?:\]|\))", tipo)
 
                 if not match:
                     raise ValueError("CHAR debe tener tamaño. Ej: CHAR[30]")
@@ -574,18 +579,22 @@ class DatabaseManager:
                 tamaño = int(match.group(1))
 
             elif tipo.startswith("VARCHAR"):
-                tipo_base = "STRING"
-                match = re.search(r"VARCHAR\[(\d+)\]", tipo)
+                tipo_base = "VARCHAR"
+                match = re.search(r"VARCHAR(?:\[|\()(\d+)(?:\]|\))", tipo)
 
                 if not match:
                     raise ValueError("VARCHAR debe tener tamaño. Ej: VARCHAR[50]")
 
                 tamaño = int(match.group(1))
 
+                if tamaño >= self.VARCHAR_NULL:
+                    raise ValueError("VARCHAR debe ser menor a 65535 bytes")
+
             else:
                 raise ValueError(f"Tipo no soportado: {tipo}")
 
-            if tamaño > self.capacidad_sector() - self.HEADER_SECTOR_SIZE:
+            # INT y FLOAT deben caber completos porque no se fragmentan.
+            if tipo_base in ("INT", "FLOAT") and tamaño > self.capacidad_sector() - self.HEADER_SECTOR_SIZE:
                 raise ValueError(
                     f"El atributo '{nombre}' ocupa {tamaño} bytes, "
                     f"pero el sector solo tiene "
@@ -606,46 +615,111 @@ class DatabaseManager:
         valor = valor.strip()
         return valor == "" or valor.upper() == "NULL"
 
+    def tam_bitmap_nulls(self):
+        return math.ceil(len(self.schema) / 8)
+
+    def marcar_null_bitmap(self, bitmap, indice_columna):
+        bitmap[indice_columna // 8] |= (1 << (indice_columna % 8))
+
+    def es_null_en_bitmap(self, bitmap, indice_columna):
+        return (bitmap[indice_columna // 8] & (1 << (indice_columna % 8))) != 0
+
     def campo_a_bytes(self, valor, columna):
         tipo = columna["tipo"]
         tamaño = columna["tamaño"]
 
-        if self.es_null(valor):
-            return b'\0' * tamaño
-
+        # IMPORTANTE:
+        # El NULL ya no se identifica mirando los bytes del campo
+        # Ahora se identifica con el bitmap de NULLS del registro
+        # Por eso aqui si el valor es NULL, solo se escribe relleno
+        # para conservar el formato físico del campo.
         if tipo == "INT":
+            if self.es_null(valor):
+                return b'\0' * 4
             return int(valor).to_bytes(4, "little", signed=True)
 
         elif tipo == "FLOAT":
+            if self.es_null(valor):
+                return b'\0' * 4
             return struct.pack("f", float(valor))
 
-        elif tipo == "STRING":
+        elif tipo == "CHAR":
+            if self.es_null(valor):
+                return b'\0' * tamaño
             texto = valor.encode("utf-8")
             return texto[:tamaño].ljust(tamaño, b'\0')
 
-    def bytes_a_campo(self, datos, columna):
+        elif tipo == "VARCHAR":
+            if self.es_null(valor):
+                # NULL se marca en el bitmap.
+                # En el campo solo guardamos longitud 0.
+                return (0).to_bytes(2, "little", signed=False)
+
+            texto = valor.encode("utf-8")
+
+            if len(texto) > tamaño:
+                raise ValueError(
+                    f"VARCHAR excede su tamaño máximo: {len(texto)} > {tamaño}"
+                )
+
+            return len(texto).to_bytes(2, "little", signed=False) + texto
+
+    def bytes_a_campo_fijo(self, datos, columna):
         tipo = columna["tipo"]
-        tamaño = columna["tamaño"]
 
-        if datos == b'\0' * tamaño:
-            return None
-
+        # Ya no se detecta NULL aquí.
+        # Si un campo es NULL, eso se decide antes usando el bitmap.
         if tipo == "INT":
             return int.from_bytes(datos, "little", signed=True)
 
         elif tipo == "FLOAT":
             return struct.unpack("f", datos)[0]
 
-        elif tipo == "STRING":
+        elif tipo == "CHAR":
             return datos.decode("utf-8").rstrip('\0')
 
     def serializar_registro_por_partes(self, fila):
-        atributos = []
+        campos = []
+        bitmap = bytearray(self.tam_bitmap_nulls())
 
-        for valor, columna in zip(fila, self.schema):
-            atributos.append(self.campo_a_bytes(valor, columna))
+        # El payload incluye:
+        # 1) bitmap de NULLs
+        # 2) bytes de todos los campos
+        tam_payload = len(bitmap)
 
-        return atributos
+        for i, (valor, columna) in enumerate(zip(fila, self.schema)):
+            if self.es_null(valor):
+                self.marcar_null_bitmap(bitmap, i)
+
+            datos = self.campo_a_bytes(valor, columna)
+            fragmentable = columna["tipo"] in ("CHAR", "VARCHAR")
+
+            campos.append({
+                "nombre": columna["nombre"],
+                "datos": datos,
+                "fragmentable": fragmentable
+            })
+
+            tam_payload += len(datos)
+
+        header_registro = tam_payload.to_bytes(
+            self.HEADER_REGISTRO_SIZE,
+            "little",
+            signed=False
+        )
+
+        return [
+            {
+                "nombre": "HEADER_REGISTRO",
+                "datos": header_registro,
+                "fragmentable": False
+            },
+            {
+                "nombre": "NULL_BITMAP",
+                "datos": bytes(bitmap),
+                "fragmentable": False
+            }
+        ] + campos
 
     def validar_fila(self, fila):
         if len(fila) != len(self.schema):
@@ -653,7 +727,6 @@ class DatabaseManager:
 
         try:
             for valor, columna in zip(fila, self.schema):
-
                 if self.es_null(valor):
                     continue
 
@@ -666,7 +739,7 @@ class DatabaseManager:
                 elif tipo == "FLOAT":
                     float(valor)
 
-                elif tipo == "STRING":
+                elif tipo in ("CHAR", "VARCHAR"):
                     texto = valor.encode("utf-8")
 
                     if len(texto) > tamaño:
@@ -681,25 +754,29 @@ class DatabaseManager:
         if self.sector_actual >= self.disco.get_total_sectores():
             raise Exception("Disco lleno")
 
-    def escribir_atributo(self, atributo, id_registro):
+    def avanzar_a_siguiente_sector(self):
+        self.sector_actual += 1
+        self.verificar_disco_lleno()
+        self.off_tmp = self.inicio_datos_sector(self.sector_actual)
+
+    def escribir_atributo_no_fragmentable(self, atributo, id_registro):
         if len(atributo) > self.capacidad_sector() - self.HEADER_SECTOR_SIZE:
-            raise Exception("El atributo no cabe en un sector")
+            raise Exception("El atributo no fragmentable no cabe en un sector")
 
         self.verificar_disco_lleno()
+
+        if self.off_tmp == self.capacidad_sector():
+            self.escribir_estado_sector(self.sector_actual, self.LLENO)
+            self.avanzar_a_siguiente_sector()
 
         espacio_actual = self.capacidad_sector() - self.off_tmp
 
         if len(atributo) > espacio_actual:
             self.registrar_gap(self.sector_actual, espacio_actual)
             self.escribir_estado_sector(self.sector_actual, self.PARCIAL)
-
-            self.sector_actual += 1
-            self.verificar_disco_lleno()
-
-            self.off_tmp = self.inicio_datos_sector(self.sector_actual)
+            self.avanzar_a_siguiente_sector()
 
         offset = self.offset_real(self.sector_actual, self.off_tmp)
-
         self.disco.escribir(offset, atributo)
 
         self.registrar_elemento_registro(
@@ -712,14 +789,57 @@ class DatabaseManager:
 
         if self.off_tmp == self.capacidad_sector():
             self.escribir_estado_sector(self.sector_actual, self.LLENO)
-
-            self.sector_actual += 1
-
-            if self.sector_actual < self.disco.get_total_sectores():
+            if self.sector_actual + 1 < self.disco.get_total_sectores():
+                self.sector_actual += 1
                 self.off_tmp = self.inicio_datos_sector(self.sector_actual)
-
         else:
             self.escribir_estado_sector(self.sector_actual, self.PARCIAL)
+
+    def escribir_atributo_fragmentable(self, atributo, id_registro):
+        restante = atributo
+
+        while restante:
+            self.verificar_disco_lleno()
+
+            if self.off_tmp == self.capacidad_sector():
+                self.escribir_estado_sector(self.sector_actual, self.LLENO)
+                self.avanzar_a_siguiente_sector()
+
+            espacio_actual = self.capacidad_sector() - self.off_tmp
+
+            if espacio_actual <= 0:
+                self.escribir_estado_sector(self.sector_actual, self.LLENO)
+                self.avanzar_a_siguiente_sector()
+                continue
+
+            porcion = restante[:espacio_actual]
+            restante = restante[espacio_actual:]
+
+            offset = self.offset_real(self.sector_actual, self.off_tmp)
+            self.disco.escribir(offset, porcion)
+
+            self.registrar_elemento_registro(
+                self.sector_actual,
+                id_registro,
+                len(porcion)
+            )
+
+            self.off_tmp += len(porcion)
+
+            if self.off_tmp == self.capacidad_sector():
+                self.escribir_estado_sector(self.sector_actual, self.LLENO)
+                if restante and self.sector_actual + 1 < self.disco.get_total_sectores():
+                    self.avanzar_a_siguiente_sector()
+            else:
+                self.escribir_estado_sector(self.sector_actual, self.PARCIAL)
+
+    def escribir_atributo(self, atributo_info, id_registro):
+        datos = atributo_info["datos"]
+
+        if atributo_info["fragmentable"]:
+            self.escribir_atributo_fragmentable(datos, id_registro)
+        else:
+            self.escribir_atributo_no_fragmentable(datos, id_registro)
 
     def escribir_registro(self, fila, id_registro):
         atributos = self.serializar_registro_por_partes(fila)
@@ -728,13 +848,14 @@ class DatabaseManager:
             self.escribir_atributo(atributo, id_registro)
 
     def cargar_csv(self, ruta_csv):
+        self.indices_avl = {}
+
         if len(self.schema) == 0:
             print("Primero debes cargar el schema")
             return
 
         with open(ruta_csv, "r", newline="", encoding="utf-8") as archivo_csv:
             lector = csv.reader(archivo_csv)
-
             next(lector)
 
             for fila in lector:
@@ -744,7 +865,6 @@ class DatabaseManager:
 
                 id_registro = self.cantidad_registros
                 self.escribir_registro(fila, id_registro)
-
                 self.cantidad_registros += 1
 
         self.guardar_header_global()
@@ -752,7 +872,7 @@ class DatabaseManager:
         print("CSV cargado correctamente")
         print("Registros insertados:", self.cantidad_registros)
 
-    def leer_bytes_logico(self, sector_actual, off_tmp, tamaño):
+    def leer_bytes_no_fragmentado(self, sector_actual, off_tmp, tamaño):
         espacio_actual = self.capacidad_sector() - off_tmp
 
         if tamaño > espacio_actual:
@@ -764,7 +884,6 @@ class DatabaseManager:
             off_tmp = self.inicio_datos_sector(sector_actual)
 
         offset = self.offset_real(sector_actual, off_tmp)
-
         datos = self.disco.leer(offset, tamaño)
 
         off_tmp += tamaño
@@ -777,7 +896,130 @@ class DatabaseManager:
 
         return datos, sector_actual, off_tmp
 
+    def leer_bytes_fragmentado(self, sector_actual, off_tmp, tamaño):
+        partes = []
+        restante = tamaño
+
+        while restante > 0:
+            if sector_actual >= self.disco.get_total_sectores():
+                raise Exception("Lectura fuera del disco")
+
+            if off_tmp == self.capacidad_sector():
+                sector_actual += 1
+                if sector_actual >= self.disco.get_total_sectores():
+                    raise Exception("Lectura fuera del disco")
+                off_tmp = self.inicio_datos_sector(sector_actual)
+
+            espacio_actual = self.capacidad_sector() - off_tmp
+            por_leer = min(restante, espacio_actual)
+
+            offset = self.offset_real(sector_actual, off_tmp)
+            partes.append(self.disco.leer(offset, por_leer))
+
+            off_tmp += por_leer
+            restante -= por_leer
+
+            if off_tmp == self.capacidad_sector():
+                sector_actual += 1
+                if sector_actual < self.disco.get_total_sectores():
+                    off_tmp = self.inicio_datos_sector(sector_actual)
+
+        return b"".join(partes), sector_actual, off_tmp
+
+    # Alias para compatibilidad con nombres anteriores.
+    def leer_bytes_logico(self, sector_actual, off_tmp, tamaño):
+        return self.leer_bytes_no_fragmentado(sector_actual, off_tmp, tamaño)
+
+    def leer_registro_en_posicion(self, sector_actual, off_tmp):
+        header, sector_actual, off_tmp = self.leer_bytes_no_fragmentado(
+            sector_actual,
+            off_tmp,
+            self.HEADER_REGISTRO_SIZE
+        )
+
+        tamaño_payload = int.from_bytes(header, "little", signed=False)
+
+        bitmap, sector_actual, off_tmp = self.leer_bytes_no_fragmentado(
+            sector_actual,
+            off_tmp,
+            self.tam_bitmap_nulls()
+        )
+
+        bytes_consumidos_payload = len(bitmap)
+        registro = {}
+
+        for i, columna in enumerate(self.schema):
+            tipo = columna["tipo"]
+            campo_es_null = self.es_null_en_bitmap(bitmap, i)
+
+            if tipo in ("INT", "FLOAT"):
+                datos, sector_actual, off_tmp = self.leer_bytes_no_fragmentado(
+                    sector_actual,
+                    off_tmp,
+                    columna["tamaño"]
+                )
+                bytes_consumidos_payload += columna["tamaño"]
+
+                if campo_es_null:
+                    registro[columna["nombre"]] = None
+                else:
+                    registro[columna["nombre"]] = self.bytes_a_campo_fijo(datos, columna)
+
+            elif tipo == "CHAR":
+                datos, sector_actual, off_tmp = self.leer_bytes_fragmentado(
+                    sector_actual,
+                    off_tmp,
+                    columna["tamaño"]
+                )
+                bytes_consumidos_payload += columna["tamaño"]
+
+                if campo_es_null:
+                    registro[columna["nombre"]] = None
+                else:
+                    registro[columna["nombre"]] = self.bytes_a_campo_fijo(datos, columna)
+
+            elif tipo == "VARCHAR":
+                longitud_bytes, sector_actual, off_tmp = self.leer_bytes_fragmentado(
+                    sector_actual,
+                    off_tmp,
+                    2
+                )
+                bytes_consumidos_payload += 2
+
+                longitud = int.from_bytes(longitud_bytes, "little", signed=False)
+
+                if campo_es_null:
+                    if longitud != 0:
+                        raise Exception(
+                            f"VARCHAR NULL corrupto en columna '{columna['nombre']}': "
+                            f"longitud esperada 0, longitud encontrada {longitud}"
+                        )
+                    registro[columna["nombre"]] = None
+                else:
+                    if longitud > columna["tamaño"]:
+                        raise Exception(
+                            f"VARCHAR corrupto en columna '{columna['nombre']}': "
+                            f"{longitud} > {columna['tamaño']}"
+                        )
+
+                    datos, sector_actual, off_tmp = self.leer_bytes_fragmentado(
+                        sector_actual,
+                        off_tmp,
+                        longitud
+                    )
+
+                    bytes_consumidos_payload += longitud
+                    registro[columna["nombre"]] = datos.decode("utf-8")
+
+        if bytes_consumidos_payload != tamaño_payload:
+            raise Exception("Registro variable corrupto o schema incompatible")
+
+        return registro, sector_actual, off_tmp
+
     def construir_indice_avl(self, nombre_atributo):
+        if nombre_atributo in self.indices_avl:
+            return self.indices_avl[nombre_atributo]
+
         arbol = CBinTree()
         sector_actual = 0
         off_tmp = self.inicio_datos_sector(0)
@@ -786,18 +1028,18 @@ class DatabaseManager:
             sector_inicio = sector_actual
             offset_inicio = off_tmp
 
-            registro = {}
-            for columna in self.schema:
-                datos, sector_actual, off_tmp = self.leer_bytes_logico(
-                    sector_actual, off_tmp, columna["tamaño"]
-                )
-                registro[columna["nombre"]] = self.bytes_a_campo(datos, columna)
-
-            arbol.ins(
-                registro[nombre_atributo],
-                sector_inicio,
-                offset_inicio
+            registro, sector_actual, off_tmp = self.leer_registro_en_posicion(
+                sector_actual,
+                off_tmp
             )
+
+            valor_indice = registro[nombre_atributo]
+
+            # No indexamos NULL para evitar comparaciones ambiguas.
+            if valor_indice is not None:
+                arbol.ins(valor_indice, sector_inicio, offset_inicio)
+
+        self.indices_avl[nombre_atributo] = arbol
         return arbol
 
     def leer_registros(self):
@@ -807,19 +1049,10 @@ class DatabaseManager:
         off_tmp = self.inicio_datos_sector(0)
 
         for _ in range(self.cantidad_registros):
-            registro = {}
-
-            for columna in self.schema:
-                tamaño = columna["tamaño"]
-
-                datos, sector_actual, off_tmp = self.leer_bytes_logico(
-                    sector_actual,
-                    off_tmp,
-                    tamaño
-                )
-
-                registro[columna["nombre"]] = self.bytes_a_campo(datos, columna)
-
+            registro, sector_actual, off_tmp = self.leer_registro_en_posicion(
+                sector_actual,
+                off_tmp
+            )
             registros.append(registro)
 
         return registros
@@ -831,88 +1064,90 @@ class DatabaseManager:
             print(registro)
 
     def mostrar_estado_sectores(self):
-        for sector_lineal in range(self.disco.get_total_sectores()):
+        usados = sorted(self.info_sectores.keys())
+
+        print(f"Total de sectores lógicos: {self.disco.get_total_sectores()}")
+        print(f"Sectores usados/registrados: {len(usados)}")
+        print("Se muestran solo los sectores usados para evitar recorrer discos grandes.")
+
+        if not usados:
+            print("Todos los sectores están libres lógicamente.")
+            return
+
+        for sector_lineal in usados:
             estado = self.leer_estado_sector(sector_lineal)
             texto = self.estado_a_texto(estado)
             direccion = self.direccion_fisica_sector(sector_lineal)
 
             print(
-            f"Plato {direccion['plato']} | "
-            f"Superficie {direccion['superficie']} | "
-            f"Pista {direccion['pista']} | "
-            f"Sector {direccion['sector']}: {texto}")
+                f"Plato {direccion['plato']} | "
+                f"Superficie {direccion['superficie']} | "
+                f"Pista {direccion['pista']} | "
+                f"Sector {direccion['sector']}: {texto}"
+            )
 
     def obtener_info_sector(self, sector_lineal):
         if sector_lineal < 0 or sector_lineal >= self.disco.get_total_sectores():
             raise ValueError("Sector inválido")
 
-        return self.info_sectores[sector_lineal]
+        return self.asegurar_info_sector(sector_lineal)
 
     def obtener_info_sectores(self):
         return self.info_sectores
 
     def mostrar_info_sectores(self):
-        for info in self.info_sectores:
-            consumido = info["ocupado"] + info["gap"]
-            direccion = info["direccion"]
+        if not self.info_sectores:
+            print("No hay sectores usados todavía.")
+            return
 
+        for sector_lineal in sorted(self.info_sectores):
+            info = self.info_sectores[sector_lineal]
+            consumido = info["ocupado"] + info["gap"]
+            libre = info["capacidad"] - consumido
+            direccion = info["direccion"]
+            estado = self.leer_estado_sector(sector_lineal)
+            texto_estado = self.estado_a_texto(estado)
             print(
                 f"Plato {direccion['plato']} | "
                 f"Superficie {direccion['superficie']} | "
                 f"Pista {direccion['pista']} | "
                 f"Sector {direccion['sector']} "
-                f"{info['estado']} | "
+                f"{texto_estado} | "
                 f"Datos/Header: {info['ocupado']}/{info['capacidad']} bytes | "
                 f"Gap: {info['gap']} bytes | "
-                f"Consumido: {consumido}/{info['capacidad']} bytes"
+                f"Consumido: {consumido}/{info['capacidad']} bytes | "
+                f"Libre: {libre} bytes"
             )
+
+            totales = {}
 
             for elemento in info["elementos"]:
                 if elemento["tipo"] == "REGISTRO":
-                    print(
-                        f"  REGISTRO {elemento['registro']}: "
-                        f"{elemento['bytes']} bytes"
-                    )
+                    reg = elemento["registro"]
+                    totales[reg] = totales.get(reg, 0) + elemento["bytes"]
                 else:
-                    print(
-                        f"  {elemento['tipo']}: "
-                        f"{elemento['bytes']} bytes"
-                    )
-    #leer un registro
+                    print(f"  {elemento['tipo']}: {elemento['bytes']} bytes")
+
+            for reg, total in totales.items():
+                print(f"  REGISTRO {reg}: {total} bytes")
+
     def leer_registro_desde(self, sector_inicio, offset_inicio):
-        registro = {}
-
-        sector_actual = sector_inicio
-        off_tmp = offset_inicio
-
-        for columna in self.schema:
-            tamaño = columna["tamaño"]
-
-            datos, sector_actual, off_tmp = self.leer_bytes_logico(
-                sector_actual,
-                off_tmp,
-                tamaño
-            )
-
-            registro[columna["nombre"]] = self.bytes_a_campo(
-                datos,
-                columna
-            )
-
+        registro, _, _ = self.leer_registro_en_posicion(sector_inicio, offset_inicio)
         return registro
-    #find
+
     def existe_atributo(self, nombre_atributo):
         for columna in self.schema:
             if columna["nombre"] == nombre_atributo:
                 return True
-
         return False
+
     def find(self, nombre_atributo, valor_buscado):
         if not self.existe_atributo(nombre_atributo):
             print("Atributo no encontrado")
             return []
 
         col = next(c for c in self.schema if c["nombre"] == nombre_atributo)
+
         try:
             if col["tipo"] == "INT":
                 valor_buscado = int(valor_buscado)
@@ -926,13 +1161,11 @@ class DatabaseManager:
         direcciones = arbol.find(valor_buscado)
 
         resultados = []
+
         for direccion in direcciones:
-            # Leemos los datos del registro
             reg = self.leer_registro_desde(direccion["sector"], direccion["offset"])
-            
-            # Convertimos el sector lineal a coordenadas físicas reales del disco
             ubicacion = self.direccion_fisica_sector(direccion["sector"])
-            # Empaquetamos todo de forma elegante
+
             resultados.append({
                 "datos": reg,
                 "ubicacion_fisica": {
@@ -943,15 +1176,16 @@ class DatabaseManager:
                     "offset_interno": direccion["offset"]
                 }
             })
-            
+
         return resultados
-    #busqueda por rango
+
     def find_range(self, nombre_atributo, minimo, maximo):
         if not self.existe_atributo(nombre_atributo):
             print("Atributo no encontrado")
             return []
 
         col = next(c for c in self.schema if c["nombre"] == nombre_atributo)
+
         if col["tipo"] == "INT":
             minimo, maximo = int(minimo), int(maximo)
         elif col["tipo"] == "FLOAT":
@@ -961,10 +1195,11 @@ class DatabaseManager:
         direcciones = arbol.buscar_rango(minimo, maximo)
 
         resultados = []
+
         for dir in direcciones:
             reg = self.leer_registro_desde(dir["sector"], dir["offset"])
             ubicacion = self.direccion_fisica_sector(dir["sector"])
-            
+
             resultados.append({
                 "datos": reg,
                 "ubicacion_fisica": {
@@ -975,6 +1210,7 @@ class DatabaseManager:
                     "offset_interno": dir["offset"]
                 }
             })
+
         return resultados
 
 
@@ -1074,4 +1310,3 @@ def menu_interactivo():
 
 if __name__ == "__main__":
     menu_interactivo()
-
