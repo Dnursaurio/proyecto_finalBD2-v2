@@ -1,6 +1,28 @@
-CREATE TABLE empleados(
-    id INT,
-    nombre CHAR[23],
-    correo VARCHAR[30],
-    salario FLOAT
+CREATE TABLE shipments (
+
+    shipment_shipmentIdentifier VARCHAR(50),
+    shipmentLineNumber INT,
+
+    shipment_shipmentType VARCHAR(20) NOT NULL,
+
+    order_orderIdentifier VARCHAR(50) NOT NULL,
+
+    orderLine_orderLineNumber INT,
+
+    dateCreated VARCHAR(50) NOT NULL,
+
+    quantity INT,
+
+    quantityUnits VARCHAR(10) NOT NULL,
+
+    value DECIMAL(15,2) NOT NULL,
+
+    valueCurrency VARCHAR(10) NOT NULL,
+
+    CONSTRAINT pk_shipments
+        PRIMARY KEY
+        (
+            shipment_shipmentIdentifier,
+            shipmentLineNumber
+        )
 );

@@ -1,2 +1,0 @@
-id,int,5
-nombre,string,10

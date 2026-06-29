@@ -413,6 +413,12 @@ class DatabaseManager:
         # Cache de índices AVL por atributo.
         self.indices_avl = {}
 
+        # Restricciones del schema.
+        self.primary_key = tuple()         # tupla de columnas que forman la PK
+        self.unique_constraints = set()    # set de tuplas de columnas UNIQUE/PK
+        self.check_constraints = []        # condiciones CHECK simples
+        self.unique_values = {}            # valores ya vistos para PK/UNIQUE
+
     def capacidad_sector(self):
         return self.disco.get_capacidad_sector()
 
@@ -527,6 +533,7 @@ class DatabaseManager:
     def inicializar_headers(self):
         self.inicializar_info_sectores()
         self.indices_avl = {}
+        self.unique_values = {}
         self.cantidad_registros = 0
         self.guardar_header_global()
 
@@ -540,6 +547,152 @@ class DatabaseManager:
             return self.HEADER_SECTOR_SIZE + self.HEADER_GLOBAL_SIZE
         return self.HEADER_SECTOR_SIZE
 
+    def dividir_por_comas_sql(self, texto):
+        partes = []
+        actual = []
+        nivel_parentesis = 0
+        en_comilla = False
+        comilla = ""
+
+        for ch in texto:
+            if ch in ("'", '\"'):
+                if not en_comilla:
+                    en_comilla = True
+                    comilla = ch
+                elif comilla == ch:
+                    en_comilla = False
+
+            if not en_comilla:
+                if ch == "(":
+                    nivel_parentesis += 1
+                elif ch == ")":
+                    nivel_parentesis -= 1
+                elif ch == "," and nivel_parentesis == 0:
+                    partes.append("".join(actual).strip())
+                    actual = []
+                    continue
+
+            actual.append(ch)
+
+        if actual:
+            partes.append("".join(actual).strip())
+
+        return partes
+
+    def limpiar_identificador(self, texto):
+        return texto.strip().strip('`').strip('"').strip()
+
+    def extraer_columnas_parentesis(self, texto):
+        inicio = texto.find("(")
+        fin = texto.rfind(")")
+
+        if inicio == -1 or fin == -1 or fin <= inicio:
+            raise ValueError("Restricción inválida: faltan paréntesis")
+
+        dentro = texto[inicio + 1:fin]
+        return [self.limpiar_identificador(c) for c in self.dividir_por_comas_sql(dentro)]
+
+    def obtener_columna(self, nombre):
+        for columna in self.schema:
+            if columna["nombre"] == nombre:
+                return columna
+        return None
+
+    def marcar_columna_not_null(self, nombre):
+        col = self.obtener_columna(nombre)
+        if col:
+            col["not_null"] = True
+
+    def marcar_columna_primary_key(self, nombre):
+        col = self.obtener_columna(nombre)
+        if col:
+            col["primary_key"] = True
+            col["not_null"] = True
+
+    def marcar_columna_unique(self, nombre):
+        col = self.obtener_columna(nombre)
+        if col:
+            col["unique"] = True
+
+    def parsear_valor_default(self, valor):
+        valor = valor.strip().rstrip(",")
+
+        if (valor.startswith("'") and valor.endswith("'")) or (valor.startswith('"') and valor.endswith('"')):
+            return valor[1:-1]
+
+        if valor.upper() == "NULL":
+            return "NULL"
+
+        return valor
+
+    def extraer_parentesis_balanceado(self, texto, inicio_parentesis):
+        nivel = 0
+        en_comilla = False
+        comilla = ""
+
+        for i in range(inicio_parentesis, len(texto)):
+            ch = texto[i]
+
+            if ch in ("'", '\"'):
+                if not en_comilla:
+                    en_comilla = True
+                    comilla = ch
+                elif comilla == ch:
+                    en_comilla = False
+
+            if en_comilla:
+                continue
+
+            if ch == "(":
+                nivel += 1
+            elif ch == ")":
+                nivel -= 1
+                if nivel == 0:
+                    return texto[inicio_parentesis + 1:i], i
+
+        raise ValueError("Paréntesis no balanceados en CHECK")
+
+    def extraer_check_inline(self, restricciones):
+        m = re.search(r"\bCHECK\s*\(", restricciones, re.IGNORECASE)
+        if not m:
+            return None
+
+        inicio_parentesis = restricciones.find("(", m.start())
+        expr, _ = self.extraer_parentesis_balanceado(restricciones, inicio_parentesis)
+        return expr
+
+    def parsear_check(self, expr):
+        expr = expr.strip()
+        inicio = expr.upper().find("CHECK")
+        if inicio != -1:
+            inicio_parentesis = expr.find("(", inicio)
+            if inicio_parentesis == -1:
+                raise ValueError(f"CHECK inválido: {expr}")
+            expr, _ = self.extraer_parentesis_balanceado(expr, inicio_parentesis)
+
+        if expr.startswith("(") and expr.endswith(")"):
+            expr = expr[1:-1].strip()
+
+        # Soporte intencionalmente simple para el proyecto:
+        # columna OPERADOR valor, por ejemplo quantity >= 0 o valueCurrency = 'USD'.
+        # No acepta expresiones complejas como IN (...), AND, OR, funciones, etc.
+        if re.search(r"\b(IN|AND|OR|BETWEEN|LIKE)\b", expr, re.IGNORECASE):
+            raise ValueError(f"CHECK no soportado por este simulador: {expr}")
+
+        m = re.match(
+            r"^([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|<>|!=|=|>|<)\s*(.+)$",
+            expr
+        )
+
+        if not m:
+            raise ValueError(f"CHECK no soportado por este simulador: {expr}")
+
+        return {
+            "columna": m.group(1),
+            "op": m.group(2),
+            "valor": self.parsear_valor_default(m.group(3))
+        }
+
     def cargar_schema(self, ruta_txt):
         with open(ruta_txt, "r", encoding="utf-8") as archivo:
             contenido = archivo.read()
@@ -551,15 +704,47 @@ class DatabaseManager:
             raise ValueError("CREATE TABLE inválido")
 
         cuerpo = contenido[inicio + 1:fin]
-        campos = cuerpo.split(",")
+        definiciones = self.dividir_por_comas_sql(cuerpo)
 
         self.schema = []
+        self.primary_key = tuple()
+        self.unique_constraints = set()
+        self.check_constraints = []
+        self.unique_values = {}
+        restricciones_tabla = []
 
-        for campo in campos:
-            partes = campo.strip().replace(";", "").split()
+        for definicion in definiciones:
+            definicion = definicion.strip().replace(";", "")
+            if not definicion:
+                continue
 
-            nombre = partes[0]
-            tipo = partes[1].upper()
+            upper = definicion.upper()
+
+            if upper.startswith("CONSTRAINT"):
+                partes = definicion.split(None, 2)
+                if len(partes) < 3:
+                    raise ValueError(f"CONSTRAINT inválida: {definicion}")
+                restricciones_tabla.append(partes[2].strip())
+                continue
+
+            if upper.startswith("PRIMARY KEY") or upper.startswith("UNIQUE") or upper.startswith("CHECK"):
+                restricciones_tabla.append(definicion)
+                continue
+
+            m = re.match(
+                r"^([A-Za-z_][A-Za-z0-9_]*)\s+"
+                r"(INT|FLOAT|DECIMAL\s*\(\s*\d+\s*,\s*\d+\s*\)|CHAR\s*(?:\[\s*\d+\s*\]|\(\s*\d+\s*\))|VARCHAR\s*(?:\[\s*\d+\s*\]|\(\s*\d+\s*\)))"
+                r"\s*(.*)$",
+                definicion,
+                re.IGNORECASE
+            )
+
+            if not m:
+                raise ValueError(f"Definición de columna inválida: {definicion}")
+
+            nombre = self.limpiar_identificador(m.group(1))
+            tipo = re.sub(r"\s+", "", m.group(2).upper())
+            restricciones = m.group(3).strip()
 
             if tipo == "INT":
                 tipo_base = "INT"
@@ -569,31 +754,30 @@ class DatabaseManager:
                 tipo_base = "FLOAT"
                 tamaño = 4
 
+            elif tipo.startswith("DECIMAL"):
+                # Se almacena como FLOAT de 4 bytes para compatibilidad con tu motor actual.
+                tipo_base = "FLOAT"
+                tamaño = 4
+
             elif tipo.startswith("CHAR"):
                 tipo_base = "CHAR"
                 match = re.search(r"CHAR(?:\[|\()(\d+)(?:\]|\))", tipo)
-
                 if not match:
                     raise ValueError("CHAR debe tener tamaño. Ej: CHAR[30]")
-
                 tamaño = int(match.group(1))
 
             elif tipo.startswith("VARCHAR"):
                 tipo_base = "VARCHAR"
                 match = re.search(r"VARCHAR(?:\[|\()(\d+)(?:\]|\))", tipo)
-
                 if not match:
                     raise ValueError("VARCHAR debe tener tamaño. Ej: VARCHAR[50]")
-
                 tamaño = int(match.group(1))
-
                 if tamaño >= self.VARCHAR_NULL:
                     raise ValueError("VARCHAR debe ser menor a 65535 bytes")
 
             else:
                 raise ValueError(f"Tipo no soportado: {tipo}")
 
-            # INT y FLOAT deben caber completos porque no se fragmentan.
             if tipo_base in ("INT", "FLOAT") and tamaño > self.capacidad_sector() - self.HEADER_SECTOR_SIZE:
                 raise ValueError(
                     f"El atributo '{nombre}' ocupa {tamaño} bytes, "
@@ -601,15 +785,97 @@ class DatabaseManager:
                     f"{self.capacidad_sector() - self.HEADER_SECTOR_SIZE} bytes útiles"
                 )
 
-            self.schema.append({
+            columna = {
                 "nombre": nombre,
                 "tipo": tipo_base,
-                "tamaño": tamaño
-            })
+                "tamaño": tamaño,
+                "not_null": False,
+                "primary_key": False,
+                "unique": False,
+                "default": None,
+                "checks": []
+            }
+
+            restricciones_upper = restricciones.upper()
+
+            if "NOT NULL" in restricciones_upper:
+                columna["not_null"] = True
+
+            if "PRIMARY KEY" in restricciones_upper:
+                columna["primary_key"] = True
+                columna["not_null"] = True
+                self.primary_key = (nombre,)
+
+            if re.search(r"\bUNIQUE\b", restricciones_upper):
+                columna["unique"] = True
+                self.unique_constraints.add((nombre,))
+
+            m_default = re.search(
+                r"\bDEFAULT\s+('(?:[^']*)'|\"(?:[^\"]*)\"|[^\s]+)",
+                restricciones,
+                re.IGNORECASE
+            )
+            if m_default:
+                columna["default"] = self.parsear_valor_default(m_default.group(1))
+
+            expr_check = self.extraer_check_inline(restricciones)
+            if expr_check is not None:
+                columna["checks"].append(self.parsear_check(expr_check))
+
+            self.schema.append(columna)
+
+        for restriccion in restricciones_tabla:
+            upper = restriccion.upper()
+
+            if upper.startswith("PRIMARY KEY"):
+                columnas = self.extraer_columnas_parentesis(restriccion)
+                self.primary_key = tuple(columnas)
+                for col in columnas:
+                    self.marcar_columna_primary_key(col)
+
+            elif upper.startswith("UNIQUE"):
+                columnas = self.extraer_columnas_parentesis(restriccion)
+                self.unique_constraints.add(tuple(columnas))
+                for col in columnas:
+                    self.marcar_columna_unique(col)
+
+            elif upper.startswith("CHECK"):
+                self.check_constraints.append(self.parsear_check(restriccion))
+
+            else:
+                raise ValueError(f"Restricción de tabla no soportada: {restriccion}")
+
+        if self.primary_key:
+            self.unique_constraints.add(tuple(self.primary_key))
+
+        # Validar que las columnas mencionadas existan.
+        nombres = {c["nombre"] for c in self.schema}
+        for col in self.primary_key:
+            self.marcar_columna_primary_key(col)
+            if col not in nombres:
+                raise ValueError(f"PRIMARY KEY usa columna inexistente: {col}")
+        for restr in self.unique_constraints:
+            for col in restr:
+                if col not in nombres:
+                    raise ValueError(f"UNIQUE usa columna inexistente: {col}")
+        for chk in self.check_constraints:
+            if chk["columna"] not in nombres:
+                raise ValueError(f"CHECK usa columna inexistente: {chk['columna']}")
+        for col in self.schema:
+            for chk in col["checks"]:
+                if chk["columna"] not in nombres:
+                    raise ValueError(f"CHECK usa columna inexistente: {chk['columna']}")
 
         print("Schema cargado:")
         for columna in self.schema:
             print(columna)
+
+        if self.primary_key:
+            print("PRIMARY KEY:", self.primary_key)
+        if self.unique_constraints:
+            print("UNIQUE:", self.unique_constraints)
+        if self.check_constraints:
+            print("CHECK:", self.check_constraints)
 
     def es_null(self, valor):
         valor = valor.strip()
@@ -721,33 +987,147 @@ class DatabaseManager:
             }
         ] + campos
 
+    def convertir_valor_para_comparar(self, valor, columna):
+        if valor is None:
+            return None
+
+        if isinstance(valor, str) and self.es_null(valor):
+            return None
+
+        tipo = columna["tipo"]
+
+        if tipo == "INT":
+            return int(valor)
+        elif tipo == "FLOAT":
+            return float(valor)
+        else:
+            return str(valor)
+
+    def evaluar_check(self, fila_dict, check):
+        columna = self.obtener_columna(check["columna"])
+        valor_izq = fila_dict.get(check["columna"])
+
+        # En SQL, CHECK con NULL no falla; lo controla NOT NULL si corresponde.
+        if valor_izq is None:
+            return True
+
+        valor_der = self.convertir_valor_para_comparar(check["valor"], columna)
+        op = check["op"]
+
+        if op == ">":
+            return valor_izq > valor_der
+        if op == ">=":
+            return valor_izq >= valor_der
+        if op == "<":
+            return valor_izq < valor_der
+        if op == "<=":
+            return valor_izq <= valor_der
+        if op == "=" :
+            return valor_izq == valor_der
+        if op in ("!=", "<>"):
+            return valor_izq != valor_der
+
+        return False
+
+    def clave_restriccion(self, fila_dict, columnas):
+        valores = []
+        for col in columnas:
+            valores.append(fila_dict.get(col))
+        return tuple(valores)
+
+    def inicializar_unique_values_si_falta(self):
+        for restr in self.unique_constraints:
+            llave = tuple(restr)
+            if llave not in self.unique_values:
+                self.unique_values[llave] = set()
+
+    def registrar_valores_unicos(self, fila_dict):
+        self.inicializar_unique_values_si_falta()
+
+        for restr in self.unique_constraints:
+            llave = tuple(restr)
+            clave = self.clave_restriccion(fila_dict, restr)
+
+            # UNIQUE permite varios NULL; PRIMARY KEY no, porque ya fue validada como NOT NULL.
+            if any(v is None for v in clave) and tuple(restr) != tuple(self.primary_key):
+                continue
+
+            self.unique_values[llave].add(clave)
+
     def validar_fila(self, fila):
-        if len(fila) != len(self.schema):
+        if len(fila) > len(self.schema):
+            print("Fila rechazada: tiene más columnas que el schema")
             return False
 
+        # Si faltan columnas al final, se rellenan para poder aplicar DEFAULT o NULL.
+        while len(fila) < len(self.schema):
+            fila.append("")
+
         try:
-            for valor, columna in zip(fila, self.schema):
+            fila_dict = {}
+
+            for i, columna in enumerate(self.schema):
+                valor = fila[i].strip()
+
+                if self.es_null(valor) and columna.get("default") is not None:
+                    valor = str(columna["default"])
+                    fila[i] = valor
+
+                if columna.get("not_null") and self.es_null(valor):
+                    print(f"Fila rechazada: columna NOT NULL vacía: {columna['nombre']}")
+                    return False
+
                 if self.es_null(valor):
+                    fila_dict[columna["nombre"]] = None
                     continue
 
                 tipo = columna["tipo"]
                 tamaño = columna["tamaño"]
 
                 if tipo == "INT":
-                    int(valor)
+                    fila_dict[columna["nombre"]] = int(valor)
 
                 elif tipo == "FLOAT":
-                    float(valor)
+                    fila_dict[columna["nombre"]] = float(valor)
 
                 elif tipo in ("CHAR", "VARCHAR"):
                     texto = valor.encode("utf-8")
-
                     if len(texto) > tamaño:
+                        print(f"Fila rechazada: {columna['nombre']} excede {tamaño} bytes")
+                        return False
+                    fila_dict[columna["nombre"]] = valor
+
+            for columna in self.schema:
+                for check in columna.get("checks", []):
+                    if not self.evaluar_check(fila_dict, check):
+                        print(f"Fila rechazada: CHECK falló en {check}")
                         return False
 
+            for check in self.check_constraints:
+                if not self.evaluar_check(fila_dict, check):
+                    print(f"Fila rechazada: CHECK falló en {check}")
+                    return False
+
+            self.inicializar_unique_values_si_falta()
+            for restr in self.unique_constraints:
+                llave = tuple(restr)
+                clave = self.clave_restriccion(fila_dict, restr)
+
+                if any(v is None for v in clave) and tuple(restr) != tuple(self.primary_key):
+                    continue
+
+                if clave in self.unique_values[llave]:
+                    if tuple(restr) == tuple(self.primary_key):
+                        print(f"Fila rechazada: PRIMARY KEY duplicada {restr} = {clave}")
+                    else:
+                        print(f"Fila rechazada: UNIQUE duplicado {restr} = {clave}")
+                    return False
+
+            self.registrar_valores_unicos(fila_dict)
             return True
 
         except ValueError:
+            print("Fila rechazada: tipo de dato inválido")
             return False
 
     def verificar_disco_lleno(self):
@@ -856,7 +1236,6 @@ class DatabaseManager:
 
         with open(ruta_csv, "r", newline="", encoding="utf-8") as archivo_csv:
             lector = csv.reader(archivo_csv)
-            next(lector)
 
             for fila in lector:
                 if not self.validar_fila(fila):
