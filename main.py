@@ -4,9 +4,8 @@ import re
 import struct
 import math
 
-
 #
-#ARBOL AVL
+# ARBOL AVL
 #
 
 from collections import deque
@@ -134,7 +133,7 @@ class CBinTree:
                 actual = actual.nodes[1]
 
         return None
-    
+
     def find(self, x):
         nodo = self.find_node(x)
 
@@ -142,7 +141,6 @@ class CBinTree:
             return nodo.direcciones
 
         return []
-
 
     def buscar_rango(self, minimo, maximo):
         resultado = []
@@ -234,6 +232,8 @@ class CBinTree:
                 q.append(actual.nodes[1])
 
         print()
+
+
 #
 # DISCO
 #
@@ -251,17 +251,17 @@ class DISK:
 
     def capacidad_total(self):
         return (
-            self.nro_superficies *
-            self.nro_pistas *
-            self.nro_sectores *
-            self.capacidad_sector
+                self.nro_superficies *
+                self.nro_pistas *
+                self.nro_sectores *
+                self.capacidad_sector
         )
 
     def get_total_sectores(self):
         return (
-            self.nro_superficies *
-            self.nro_pistas *
-            self.nro_sectores
+                self.nro_superficies *
+                self.nro_pistas *
+                self.nro_sectores
         )
 
     def get_capacidad_sector(self):
@@ -319,20 +319,20 @@ class DISK:
             raise ValueError("Sector inválido")
 
         return (
-            superficie * self.nro_pistas * self.nro_sectores
-            + pista * self.nro_sectores
-            + sector
+                superficie * self.nro_pistas * self.nro_sectores
+                + pista * self.nro_sectores
+                + sector
         )
 
     def lineal_a_direccion(self, sector_lineal):
         self.validar_sector_lineal(sector_lineal)
 
         superficie = sector_lineal // (
-            self.nro_pistas * self.nro_sectores
+                self.nro_pistas * self.nro_sectores
         )
 
         resto = sector_lineal % (
-            self.nro_pistas * self.nro_sectores
+                self.nro_pistas * self.nro_sectores
         )
 
         pista = resto // self.nro_sectores
@@ -381,15 +381,14 @@ class DISK:
             offset,
             self.capacidad_sector
         )
-    
+
 
 #
-#DatabaseManager
+# DatabaseManager
 #
 
 
 class DatabaseManager:
-
     LIBRE = 0
     PARCIAL = 1
     LLENO = 2
@@ -414,10 +413,10 @@ class DatabaseManager:
         self.indices_avl = {}
 
         # Restricciones del schema.
-        self.primary_key = tuple()         # tupla de columnas que forman la PK
-        self.unique_constraints = set()    # set de tuplas de columnas UNIQUE/PK
-        self.check_constraints = []        # condiciones CHECK simples
-        self.unique_values = {}            # valores ya vistos para PK/UNIQUE
+        self.primary_key = tuple()  # tupla de columnas que forman la PK
+        self.unique_constraints = set()  # set de tuplas de columnas UNIQUE/PK
+        self.check_constraints = []  # condiciones CHECK simples
+        self.unique_values = {}  # valores ya vistos para PK/UNIQUE
 
     def capacidad_sector(self):
         return self.disco.get_capacidad_sector()
@@ -465,8 +464,6 @@ class DatabaseManager:
             }
 
         return self.info_sectores[sector_lineal]
-
-    
 
     def registrar_elemento_registro(self, sector, id_registro, bytes_ocupados):
         info = self.asegurar_info_sector(sector)
@@ -948,7 +945,7 @@ class DatabaseManager:
         campos = []
         bitmap = bytearray(self.tam_bitmap_nulls())
 
-        # El payload incluye:
+        # El payload includes:
         # 1) bitmap de NULLs
         # 2) bytes de todos los campos
         tam_payload = len(bitmap)
@@ -1022,7 +1019,7 @@ class DatabaseManager:
             return valor_izq < valor_der
         if op == "<=":
             return valor_izq <= valor_der
-        if op == "=" :
+        if op == "=":
             return valor_izq == valor_der
         if op in ("!=", "<>"):
             return valor_izq != valor_der
@@ -1389,7 +1386,7 @@ class DatabaseManager:
 
                     bytes_consumidos_payload += longitud
                     registro[columna["nombre"]] = datos.decode("utf-8")
-
+                    
         if bytes_consumidos_payload != tamaño_payload:
             raise Exception("Registro variable corrupto o schema incompatible")
 
@@ -1593,11 +1590,11 @@ class DatabaseManager:
         return resultados
 
 
-#Interfaz por consola
+# Interfaz por consola
 def menu_interactivo():
-    print("="*50)
+    print("=" * 50)
     print("  CONFIGURACIÓN DE GEOMETRÍA DEL DISCO RÍGIDO (Potencias de 2)")
-    print("="*50)
+    print("=" * 50)
     try:
         p = int(input("Exponente de platos (2^p platos) [Por defecto 0 -> 1 plato]: ").strip() or "0")
         t = int(input("Exponente de pistas (2^t pistas) [Por defecto 0 -> 1 pista]: ").strip() or "0")
@@ -1613,9 +1610,9 @@ def menu_interactivo():
     db.inicializar_headers()
 
     while True:
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("SISTEMA DE GESTIÓN DE BASES DE DATOS FÍSICAS")
-        print("="*50)
+        print("=" * 50)
         print("1. Cargar Esquema de la Tabla (schema.txt)")
         print("2. Poblar desde Archivo de Datos (datos.csv)")
         print("3. Mostrar Todos los Registros Almacenados")
@@ -1624,8 +1621,8 @@ def menu_interactivo():
         print("6. Búsqueda Puntual (Indexada con Árbol AVL)")
         print("7. Búsqueda por Rango (Indexada con Árbol AVL)")
         print("8. Salir y Destruir Disco Dat")
-        print("="*50)
-        
+        print("=" * 50)
+
         opcion = input("Seleccione una opción estratégica (1-8): ").strip()
 
         if opcion == "1":
@@ -1687,5 +1684,267 @@ def menu_interactivo():
         else:
             print("Opción inválida, intente de nuevo.")
 
+
+#
+# INTERFAZ DE ESCRITORIO (Tkinter)
+# Se abre solo, en una ventana nueva, al correr este archivo (botón Run de PyCharm
+# o "python mainv3.py" en la terminal). No usa navegador ni servidor.
+#
+
+import io
+from contextlib import redirect_stdout
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import ttk  # Importado para estructurar el espacio físico pedido
+
+
+def _ejecutar_silencioso(func, *args, **kwargs):
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        resultado = func(*args, **kwargs)
+    return resultado, buf.getvalue().strip()
+
+
+class AplicacionDisco:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Simulador de Disco - BD2")
+        self.disco = None
+        self.db = None
+
+        # --- 1. Crear disco ---
+        frame_disco = tk.LabelFrame(root, text="1. Crear disco")
+        frame_disco.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(frame_disco, text="Platos (2^p):").grid(row=0, column=0, padx=3)
+        self.entry_p = tk.Entry(frame_disco, width=4)
+        self.entry_p.insert(0, "0")
+        self.entry_p.grid(row=0, column=1)
+
+        tk.Label(frame_disco, text="Pistas (2^t):").grid(row=0, column=2, padx=3)
+        self.entry_t = tk.Entry(frame_disco, width=4)
+        self.entry_t.insert(0, "0")
+        self.entry_t.grid(row=0, column=3)
+
+        tk.Label(frame_disco, text="Sectores (2^s):").grid(row=0, column=4, padx=3)
+        self.entry_s = tk.Entry(frame_disco, width=4)
+        self.entry_s.insert(0, "8")
+        self.entry_s.grid(row=0, column=5)
+
+        tk.Label(frame_disco, text="Bytes/sector (2^c):").grid(row=0, column=6, padx=3)
+        self.entry_c = tk.Entry(frame_disco, width=4)
+        self.entry_c.insert(0, "8")
+        self.entry_c.grid(row=0, column=7)
+
+        tk.Button(frame_disco, text="Crear disco", command=self.crear_disco).grid(row=0, column=8, padx=5)
+        tk.Button(frame_disco, text="Destruir disco", command=self.destruir_disco).grid(row=0, column=9, padx=5)
+
+        # --- 2. Cargar schema y datos ---
+        frame_carga = tk.LabelFrame(root, text="2. Cargar schema y datos")
+        frame_carga.pack(fill="x", padx=10, pady=5)
+
+        tk.Button(frame_carga, text="Cargar schema (.txt)", command=self.cargar_schema).pack(side="left", padx=5,
+                                                                                             pady=5)
+        tk.Button(frame_carga, text="Cargar datos (.csv)", command=self.cargar_csv).pack(side="left", padx=5, pady=5)
+        tk.Button(frame_carga, text="Ver registros", command=self.ver_registros).pack(side="left", padx=5, pady=5)
+
+        # --- 3. Buscar ---
+        frame_busq = tk.LabelFrame(root, text="3. Buscar")
+        frame_busq.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(frame_busq, text="Atributo:").grid(row=0, column=0, padx=3, sticky="e")
+        self.entry_attr = tk.Entry(frame_busq, width=22)
+        self.entry_attr.grid(row=0, column=1, padx=3)
+
+        self.modo_busqueda = tk.StringVar(value="puntual")
+        tk.Radiobutton(frame_busq, text="Puntual", variable=self.modo_busqueda, value="puntual").grid(row=0, column=2)
+        tk.Radiobutton(frame_busq, text="Rango", variable=self.modo_busqueda, value="rango").grid(row=0, column=3)
+
+        tk.Label(frame_busq, text="Valor / Mínimo:").grid(row=1, column=0, padx=3, sticky="e")
+        self.entry_valor = tk.Entry(frame_busq, width=22)
+        self.entry_valor.grid(row=1, column=1, padx=3)
+
+        tk.Label(frame_busq, text="Máximo (si es rango):").grid(row=1, column=2, padx=3, sticky="e")
+        self.entry_maximo = tk.Entry(frame_busq, width=22)
+        self.entry_maximo.grid(row=1, column=3, padx=3)
+
+        tk.Button(frame_busq, text="Buscar", command=self.buscar).grid(row=1, column=4, padx=5)
+
+        # --- Salida de texto ---
+        frame_salida = tk.LabelFrame(root, text="Resultado")
+        frame_salida.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.texto_salida = scrolledtext.ScrolledText(frame_salida, height=12)
+        self.texto_salida.pack(fill="both", expand=True, padx=5, pady=5)
+
+        # --- NUEVO ESPACIO PEDIDO: Ubicaciones en disco de los datos consultados ---
+        frame_ubicaciones = tk.LabelFrame(frame_salida, text="Ubicación Física de Datos Consultados en Disco")
+        frame_ubicaciones.pack(fill="x", side="bottom", padx=5, pady=5)
+
+        columnas_tabla = ("registro", "plato", "superficie", "pista", "sector", "offset")
+        self.tabla_direcciones = ttk.Treeview(frame_ubicaciones, columns=columnas_tabla, show="headings", height=5)
+        self.tabla_direcciones.pack(fill="both", expand=True, padx=5, pady=5)
+
+        self.tabla_direcciones.heading("registro", text="Registro")
+        self.tabla_direcciones.heading("plato", text="Plato")
+        self.tabla_direcciones.heading("superficie", text="Superficie")
+        self.tabla_direcciones.heading("pista", text="Pista")
+        self.tabla_direcciones.heading("sector", text="Sector")
+        self.tabla_direcciones.heading("offset", text="Offset Interno")
+
+        self.tabla_direcciones.column("registro", width=250, anchor="w")
+        self.tabla_direcciones.column("plato", width=60, anchor="center")
+        self.tabla_direcciones.column("superficie", width=80, anchor="center")
+        self.tabla_direcciones.column("pista", width=60, anchor="center")
+        self.tabla_direcciones.column("sector", width=60, anchor="center")
+        self.tabla_direcciones.column("offset", width=90, anchor="center")
+
+    # ------------------------------------------------------------------
+    def log(self, texto):
+        self.texto_salida.delete("1.0", tk.END)
+        self.texto_salida.insert(tk.END, texto)
+
+    def agregar_log(self, texto):
+        self.texto_salida.insert(tk.END, texto)
+
+    # ------------------------------------------------------------------
+    def crear_disco(self):
+        try:
+            p = int(self.entry_p.get())
+            t = int(self.entry_t.get())
+            s = int(self.entry_s.get())
+            c = int(self.entry_c.get())
+        except ValueError:
+            messagebox.showerror("Error", "Los valores de geometría deben ser números enteros.")
+            return
+
+        self.disco = DISK(p, t, s, c)
+        _ejecutar_silencioso(self.disco.formateador)
+        self.db = DatabaseManager(self.disco)
+        _ejecutar_silencioso(self.db.inicializar_headers)
+        self.log(
+            f"Disco creado.\n"
+            f"Capacidad total: {self.disco.capacidad_total():,} bytes\n"
+            f"Sectores totales: {self.disco.get_total_sectores():,}\n"
+        )
+        for item in self.tabla_direcciones.get_children():
+            self.tabla_direcciones.delete(item)
+
+    def destruir_disco(self):
+        if self.disco:
+            self.disco.eliminar_disco()
+            self.disco = None
+            self.db = None
+            self.log("Disco destruido.\n")
+            for item in self.tabla_direcciones.get_children():
+                self.tabla_direcciones.delete(item)
+        else:
+            messagebox.showinfo("Sin disco", "No hay ningún disco creado todavía.")
+
+    def cargar_schema(self):
+        if not self.db:
+            messagebox.showwarning("Falta el disco", "Primero crea el disco.")
+            return
+
+        ruta = filedialog.askopenfilename(filetypes=[("Archivos de texto", "*.txt")])
+        if not ruta:
+            return
+
+        try:
+            _ejecutar_silencioso(self.db.cargar_schema, ruta)
+        except Exception as e:
+            messagebox.showerror("Error al cargar schema", str(e))
+            return
+
+        texto = f"Schema cargado: {len(self.db.schema)} columnas.\n\n"
+        for col in self.db.schema:
+            texto += f"- {col['nombre']}: {col['tipo']} ({col['tamaño']} bytes)\n"
+        self.log(texto)
+
+    def cargar_csv(self):
+        if not self.db or not self.db.schema:
+            messagebox.showwarning("Falta el schema", "Primero carga el schema.")
+            return
+
+        ruta = filedialog.askopenfilename(filetypes=[("Archivos CSV", "*.csv")])
+        if not ruta:
+            return
+
+        try:
+            _, log = _ejecutar_silencioso(self.db.cargar_csv, ruta)
+        except Exception as e:
+            messagebox.showerror("Error al cargar CSV", str(e))
+            return
+
+        rechazadas = [l for l in log.splitlines() if "rechazada" in l]
+        texto = f"Registros insertados: {self.db.cantidad_registros}\n"
+        if rechazadas:
+            texto += f"\nFilas rechazadas ({len(rechazadas)}):\n"
+            texto += "\n".join(rechazadas)
+        self.log(texto)
+
+    def ver_registros(self):
+        if not self.db or self.db.cantidad_registros == 0:
+            messagebox.showinfo("Sin datos", "Todavía no hay registros cargados.")
+            return
+
+        registros, _ = _ejecutar_silencioso(self.db.leer_registros)
+        texto = ""
+        for i, r in enumerate(registros, 1):
+            texto += f"{i}. {r}\n"
+        self.log(texto)
+
+    def buscar(self):
+        if not self.db or not self.db.schema:
+            messagebox.showwarning("Falta el schema", "Primero carga el schema y los datos.")
+            return
+
+        atributo = self.entry_attr.get().strip()
+        if not atributo:
+            messagebox.showwarning("Falta el atributo", "Escribe el nombre del atributo a buscar.")
+            return
+
+        # Limpiar tabla física previa antes de una nueva búsqueda
+        for item in self.tabla_direcciones.get_children():
+            self.tabla_direcciones.delete(item)
+
+        if self.modo_busqueda.get() == "puntual":
+            valor = self.entry_valor.get().strip()
+            resultados, log = _ejecutar_silencioso(self.db.find, atributo, valor)
+        else:
+            minimo = self.entry_valor.get().strip()
+            maximo = self.entry_maximo.get().strip()
+            resultados, log = _ejecutar_silencioso(self.db.find_range, atributo, minimo, maximo)
+
+        if not resultados:
+            self.log(log if log else "Sin resultados.\n")
+            return
+
+        texto = f"{len(resultados)} resultado(s):\n\n"
+        for r in resultados:
+            texto += f"{r['datos']}\n   (sector {r['ubicacion_fisica']['sector']})\n\n"
+            
+            # Insertar dinámicamente las ubicaciones de hardware mapeadas en la nueva tabla dedicada
+            self.tabla_direcciones.insert(
+                "",
+                "end",
+                values=(
+                    str(r['datos']),
+                    r['ubicacion_fisica']['plato'],
+                    r['ubicacion_fisica']['superficie'],
+                    r['ubicacion_fisica']['pista'],
+                    r['ubicacion_fisica']['sector'],
+                    r['ubicacion_fisica']['offset_interno']
+                )
+            )
+        self.log(texto)
+
+
+def lanzar_interfaz():
+    root = tk.Tk()
+    AplicacionDisco(root)
+    root.mainloop()
+
+
 if __name__ == "__main__":
-    menu_interactivo()
+    lanzar_interfaz()
