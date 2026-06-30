@@ -670,9 +670,7 @@ class DatabaseManager:
         if expr.startswith("(") and expr.endswith(")"):
             expr = expr[1:-1].strip()
 
-        # Soporte intencionalmente simple para el proyecto:
-        # columna OPERADOR valor, por ejemplo quantity >= 0 o valueCurrency = 'USD'.
-        # No acepta expresiones complejas como IN (...), AND, OR, funciones, etc.
+        # Soporte intencionalmente simple para el proyecto
         if re.search(r"\b(IN|AND|OR|BETWEEN|LIKE)\b", expr, re.IGNORECASE):
             raise ValueError(f"CHECK no soportado por este simulador: {expr}")
 
@@ -752,7 +750,7 @@ class DatabaseManager:
                 tamaño = 4
 
             elif tipo.startswith("DECIMAL"):
-                # Se almacena como FLOAT de 4 bytes para compatibilidad con tu motor actual.
+                # Se almacena como FLOAT de 4 bytes 
                 tipo_base = "FLOAT"
                 tamaño = 4
 
